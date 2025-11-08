@@ -33,6 +33,7 @@ let userStatus = [
     {
         id: "test-user",
         isInCarDangerZone: false,
+        isCurrentRdBikeFriendly: false,
     },
 ];
 
@@ -43,7 +44,13 @@ let getUser = (req) => {
 
 let CAR_DANGER_THRESHOLD = 50; // 假設的閾值
 
-app.put("/interact", (req, res) => {
+let positionHistory = [];
+app.put("/interact", async (req, res) => {
+    positionHistory.push({ lng: req.body.lng, lat: req.body.lat });
+    if (positionHistory.length > 5) {
+        positionHistory.shift();
+    }
+
     let eventList = [];
 
     if (!req.body.lng) {
@@ -56,26 +63,62 @@ app.put("/interact", (req, res) => {
             .status(400)
             .json({ error: "Missing required parameter: lat" });
     }
+    
 
-    let tmp = accidentDataModule.query(req.body.lng, req.body.lat);
+    switch (req.body.type) {
+    case "car": {
+        let tmp = accidentDataModule.query(req.body.lng, req.body.lat);
 
-    console.log("事故指數:", tmp);
+        console.log("事故指數:", tmp);
 
-    if (tmp > CAR_DANGER_THRESHOLD) {
-        if (userStatus[0].isInCarDangerZone) {
-            return res.status(200).json({});
+        if (tmp > CAR_DANGER_THRESHOLD) {
+            if (userStatus[0].isInCarDangerZone) {
+                return res.status(200).json({});
+            }
+            userStatus[0].isInCarDangerZone = true;
+            eventList.push(events.USER_ENTERED_DANGER_ZONE);
+        } else {
+            userStatus[0].isInCarDangerZone = false;
         }
-        userStatus[0].isInCarDangerZone = true;
-        eventList.push(events.USER_ENTERED_DANGER_ZONE);
-    } else {
-        userStatus[0].isInCarDangerZone = false;
-    }
 
-    if ( eventList.includes(events.USER_ENTERED_DANGER_ZONE) ) {
-        return res.status(200).json({
-            "type": "car",
-            "message": "你現在進到高發事故，危險區，請你注意，不要變成大體或是害別人變成大體。"
-        });
+        if ( eventList.includes(events.USER_ENTERED_DANGER_ZONE) ) {
+            return res.status(200).json({
+                "type": "car",
+                "message": "你現在進到高發事故危險區，請注意安全。"
+            });
+        }
+    } 
+    case "bike":
+        let predictNext2DPoint = require("./lib/predictNextPoint").predictNext2DPoint;
+
+        let predictedPoint = predictNext2DPoint(positionHistory, 5); // 預測 5 步後的位置
+        console.log("預測位置:", predictedPoint);
+
+        let line = await databaseService.findNearestLine(predictedPoint.x, predictedPoint.y)
+        let isNextRdBikeFriendly = (line.bike == 1);
+
+        if (isNextRdBikeFriendly != userStatus[0].isCurrentRdBikeFriendly) {
+            userStatus[0].isCurrentRdBikeFriendly = isNextRdBikeFriendly;
+
+            eventList.push(events.USER_BIKE_FRIENDLY_ROAD_STATUS_CHANGED);
+        }
+
+
+        if (eventList.includes(events.USER_BIKE_FRIENDLY_ROAD_STATUS_CHANGED)) {
+            let msg = isNextRdBikeFriendly ? 
+                "前方道路為自行車友善道路，騎乘更舒適！" :
+                "前方道路非自行車友善道路，請注意安全！"; 
+
+            return res.status(200).json({
+                "type": "bike",
+                "message": msg
+            });
+        }
+        
+        
+    break;
+    default:
+        return res.status(400).json({ error: "Invalid interaction type." });
     }
 });
 
@@ -86,6 +129,37 @@ app.put("/interact", (req, res) => {
 //   } else {
 //     res.json({ message: 'Interaction received', lng: req.body.lng, lat: req.body.lat });
 //   }
+
+
+app.get("/line/nearest", async (req, res) => {
+    if (!req.query.lng) {
+        return res
+            .status(400)
+            .json({ error: "Missing required parameter: lng" });
+    }
+    if (!req.query.lat) {
+        return res
+            .status(400)
+            .json({ error: "Missing required parameter: lat" });
+    }
+
+    try {
+        const nearestLine = await databaseService.findNearestLine(
+            parseFloat(req.query.lng),
+            parseFloat(req.query.lat)
+        );
+        
+        res.json({
+            message: "Nearest line found.",
+            line: nearestLine,
+        });
+    } catch (err) {
+        console.error("Error in /line/nearest route:", err.message);
+        res.status(500).json({ error: "Internal server error" });
+    }
+});
+
+
 
 // --- 新增的 API 路由，使用 databaseService ---
 app.get("/nodes/in-bounds", async (req, res) => {

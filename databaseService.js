@@ -347,6 +347,24 @@ function fetchAllBikeLines() {
     });
 }
 
+function findNearestLine(lat, lng) {
+    // find the line that two point are closest to the line's start and end point
+    return new Promise((resolve, reject) => {
+        const sql = `
+            SELECT *, 
+            ((start_lat - ?)*(start_lat - ?) + (start_lng - ?)*(start_lng - ?)) AS dist_start,
+            ((end_lat - ?)*(end_lat - ?) + (end_lng - ?)*(end_lng - ?)) AS dist_end
+            FROM Lines
+            ORDER BY MIN(dist_start, dist_end) ASC
+            LIMIT 1
+        `;
+        db.get(sql, [lat, lat, lng, lng, lat, lat, lng, lng], (err, row) => {
+            if (err) { reject(err); } else { resolve(row); }
+        });
+    }
+
+)}
+
 /**
  * *** 新增函式 (已修復並改為 Async) ***
  * 批次更新 'Lines' 表，將 'bike' 欄位設為 1
@@ -438,5 +456,6 @@ module.exports = {
     fetchAllLines,
     fetchAllBikeLines,
     updateLinesBikeStatus,
-    findAllLines
+    findAllLines,
+    findNearestLine
 };
