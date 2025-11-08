@@ -15,6 +15,12 @@ app.use(express.json());
 
 const PORT = 5121;
 
+// 提供靜態檔案
+app.get('/NPA_TMA2_JSON_7.json', (req, res) => {
+    const path = require('path');
+    res.sendFile(path.join(__dirname, 'NPA_TMA2_JSON_7.json'));
+});
+
 // --- API 路由 ---
 
 app.get('/', (req, res) => {
@@ -142,6 +148,24 @@ app.get('/lines/:id/connected', async (req, res) => {
 });
 // <--- 新增部分 END ---
 
+// --- 新增的 API 路由，取得所有線路 ---
+app.get('/lines', async (req, res) => {
+    try {
+        // 呼叫服務模組的函式
+        const lines = await databaseService.findAllLines();
+
+        res.json({
+            message: `Found ${lines.length} lines in total.`,
+            count: lines.length,
+            lines: lines
+        });
+
+    } catch (err) {
+        console.error('Error in /lines route:', err.message);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
 
 // --- 伺服器啟動邏輯 ---
 
@@ -162,6 +186,7 @@ async function startServer() {
             console.log('Try visiting: http://localhost:5121/nodes/in-bounds?latMin=25.01&latMax=25.02&lngMin=121.540&lngMax=121.542');
             console.log('Try visiting: http://localhost:5121/lines/connected-to-nodes-in-bounds?latMin=25.01&latMax=25.02&lngMin=121.540&lngMax=121.542');
             console.log('Try visiting: http://localhost:5121/lines/10/connected'); // <--- 新增部分: 測試日誌
+            console.log('Try visiting: http://localhost:5121/lines');
         });
 
     } catch (err) {

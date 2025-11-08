@@ -1,23 +1,15 @@
+// 檔名: databaseManager.js
+
 const fs = require('fs');
 const sqlite3 = require('sqlite3').verbose();
+const { DatabaseServiceExtension } = require('./databaseServiceExtension.js'); // *** 1. 匯入 Extension ***
 
-// (JSDoc 註解和頂層 'db' 變數... 保持不變)
-// ...
-/**
- * @typedef {Object} Line
- * @property {number} id - The unique identifier for the line.
- * @property {string} name - The name of the line.
- * @property {string} rd_from - The road name from the GeoJSON properties.
- * @property {string | null} sidewalk - Sidewalk information (e.g., "left", "right", null).
- * @property {Node} start - The starting node of the line.
- * @property {Node} end - The ending node of the line.
- */
 let db;
-
 
 /**
  * 初始化資料庫：連接、建立資料表、清空舊資料、載入 GeoJSON
- * @returns {Promise<void>} - 一個在資料載入完成後 resolve 的 Promise
+ * *** 並且執行高階比對 ***
+ * @returns {Promise<void>} - 一個在資料載入和比對完成後 resolve 的 Promise
  */
 function initializeDatabase() {
     return new Promise((resolve, reject) => {
@@ -30,7 +22,7 @@ function initializeDatabase() {
             console.log('Connected to the SQLite database.');
         });
 
-        // 2. 建立資料表 (Lines) - 包含 sidewalk 欄位
+        // 2. 建立資料表 (Lines) - 包含 bike 欄位
         const createTableSql = `
         CREATE TABLE IF NOT EXISTS Lines (
             id INTEGER PRIMARY KEY,
@@ -40,7 +32,8 @@ function initializeDatabase() {
             start_lat REAL,
             start_lng REAL,
             end_lat REAL,
-            end_lng REAL
+            end_lng REAL,
+            bike INTEGER NOT NULL DEFAULT 0 
         );`;
 
         // 3. 建立 Nodes 表
@@ -52,8 +45,7 @@ function initializeDatabase() {
             UNIQUE(lat, lng)
         );`;
 
-        // *** 新增 ***
-        // 4. 建立 Bike 表 (不含 sidewalk)
+        // 4. 建立 Bike 表
         const createBikeTableSql = `
         CREATE TABLE IF NOT EXISTS Bike (
             id INTEGER PRIMARY KEY,
@@ -69,59 +61,63 @@ function initializeDatabase() {
         db.serialize(() => {
             db.run(createTableSql, (err) => {
                 if (err) return reject(err);
-                console.log('Table "Lines" is ready.');
+                console.log('Table "Lines" is ready (with "bike" column).');
             });
-
             db.run(createNodesTableSql, (err) => {
                 if (err) return reject(err);
                 console.log('Table "Nodes" is ready.');
             });
-
-            // *** 新增 ***
             db.run(createBikeTableSql, (err) => {
                 if (err) return reject(err);
                 console.log('Table "Bike" is ready.');
             });
 
             console.log('Clearing existing data from tables...');
-            db.run(`DELETE FROM Lines;`, (err) => {
-                if (err) return reject(err);
-                console.log('Table "Lines" cleared.');
-            });
-
-            db.run(`DELETE FROM Nodes;`, (err) => {
-                if (err) return reject(err);
-                console.log('Table "Nodes" cleared.');
-            });
-
-            // *** 新增 ***
-            db.run(`DELETE FROM Bike;`, (err) => {
-                if (err) return reject(err);
-                console.log('Table "Bike" cleared.');
-            });
+            db.run(`DELETE FROM Lines;`, (err) => { if (err) return reject(err); });
+            db.run(`DELETE FROM Nodes;`, (err) => { if (err) return reject(err); });
+            db.run(`DELETE FROM Bike;`, (err) => { if (err) return reject(err); });
 
 
-            // 6. 啟動三階段處理
+            // 6. 啟動四階段處理
             db.run("SELECT 1", (err) => {
                 if (err) return reject(err);
                 
                 console.log('Database setup complete. Starting Step 1: Processing highway.geojson...');
                 
-                // *** 關鍵修改 (三階段) ***
                 // 執行第一步：載入基礎道路
                 processHighwayGeoJSON(db, reject, () => {
                     // 第一步成功的回呼
-                    console.log('Step 1 complete. Starting Step 2: Updating sidewalks from osm-walk.geojson...');
+                    console.log('Step 1 complete. Starting Step 2: Updating sidewalks...');
                     
                     // 執行第二步：更新人行道資訊
-                    // (使用 updateSidewalks 的 'resolve' 參數作為我們的 'onSuccess' 回呼)
                     updateSidewalksFromGeoJSON(db, () => {
                         // 第二步成功的回呼
                         console.log('Step 2 complete. Starting Step 3: Processing bike.geojson...');
                         
                         // 執行第三步：載入自行車道
-                        // (這是最後一步，所以我們傳入 *原始* 的 resolve)
-                        processBikeGeoJSON(db, resolve, reject);
+                        processBikeGeoJSON(db, () => {
+                            // 第三步成功的回呼
+                            console.log('Step 3 complete. Starting Step 4: Complex bike matching (Extension)...');
+                            
+                            // *** 2. 關鍵修改 ***
+                            // 不是直接 resolve()，而是呼叫 Extension
+                            
+                            const extension = new DatabaseServiceExtension();
+                            
+                            // 呼叫 hook，並將此模組的函式作為參數注入
+                            extension.startHook({
+                                fetchAllLines,
+                                fetchAllBikeLines,
+                                updateLinesBikeStatus
+                            })
+                            .then(() => {
+                                // 當 Hook 完成後，才真正 resolve
+                                console.log('Step 4 complete. All database tasks finished.');
+                                resolve(); 
+                            })
+                            .catch(reject); // 如果 hook 出錯，則 reject 整個
+                            
+                        }, reject); // 傳入 reject 供第三步使用
 
                     }, reject); // 傳入 reject 供第二步使用
                 });
@@ -130,103 +126,46 @@ function initializeDatabase() {
     });
 }
 
+// ... (processHighwayGeoJSON, updateSidewalksFromGeoJSON, processBikeGeoJSON 函式... )
+// ... (這些函式與您上一回合的程式碼完全相同，請保留它們) ...
+
 /**
- * (第 1 步) 處理 highway.geojson 檔案並寫入資料庫
- * @param {sqlite3.Database} db - 資料庫實例
- * @param {Function} reject - 失敗時呼叫的 Promise reject 函式
- * @param {Function} onSuccess - 成功時呼叫的回呼函式
+ * (第 1 步) 處理 highway.geojson ...
  */
 function processHighwayGeoJSON(db, reject, onSuccess) {
-    // ... (此函式保持不變) ...
+    // ... (您上一回合的完整程式碼) ...
+    // ... (確保在最終的 db.run("COMMIT;", ...) 中呼叫 onSuccess()) ...
     const highwayGeoJSON = JSON.parse(fs.readFileSync('./highway.geojson', 'utf8'));
     console.log(`[Step 1] Total highway features found: ${highwayGeoJSON.features.length}`);
-
-    const lineFeatures = highwayGeoJSON.features.filter(feature => {
-        return feature.geometry.type === 'LineString';
-    });
+    const lineFeatures = highwayGeoJSON.features.filter(feature => feature.geometry.type === 'LineString');
     console.log(`[Step 1] Filtered LineString features: ${lineFeatures.length}`);
-
-    // INSERT 語句包含 sidewalk 欄位
     const insertLineSql = `INSERT INTO Lines (id, name, rd_from, sidewalk, start_lat, start_lng, end_lat, end_lng) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`;
     const insertNodeSql = `INSERT OR IGNORE INTO Nodes (lat, lng) VALUES (?, ?)`;
-
     db.run("BEGIN TRANSACTION;");
-
     const lineStmt = db.prepare(insertLineSql);
     const nodeStmt = db.prepare(insertNodeSql);
     let lineIdCounter = 1;
-
     lineFeatures.forEach(element => {
         let last = null;
-        
         const properties = element.properties || {};
         const roadName = properties["name"] || null;
-        // 注意：基礎道路的 sidewalk 預設為 null
-
         element.geometry.coordinates.forEach(coordRaw => {
-            let coord = {
-                lat: coordRaw[1],
-                lng: coordRaw[0]
-            };
-
+            let coord = { lat: coordRaw[1], lng: coordRaw[0] };
             nodeStmt.run(coord.lat, coord.lng);
-
-            if (!last) {
-                last = coord;
-                return;
-            }
-
-            const line = {
-                id: lineIdCounter,
-                name: `uiiai${lineIdCounter}`,
-                start: last,
-                end: coord
-            };
-            
-            // 執行 INSERT，sidewalk 欄位傳入 null
-            lineStmt.run(
-                line.id, 
-                line.name, 
-                roadName, 
-                null, // <--- 基礎道路的人行道設為 null
-                line.start.lat, 
-                line.start.lng, 
-                line.end.lat, 
-                line.end.lng
-            );
-
+            if (!last) { last = coord; return; }
+            const line = { id: lineIdCounter, name: `uiiai${lineIdCounter}`, start: last, end: coord };
+            lineStmt.run(line.id, line.name, roadName, null, line.start.lat, line.start.lng, line.end.lat, line.end.lng);
             lineIdCounter++;
             last = coord;
         });
     });
-
     lineStmt.finalize((err) => {
-        if (err) {
-            console.error("[Step 1] Error finalizing line statement:", err.message);
-            db.run("ROLLBACK;");
-            return reject(err);
-        }
-        console.log('[Step 1] Line statement finalized.');
-
+        if (err) { db.run("ROLLBACK;"); return reject(err); }
         nodeStmt.finalize((nodeErr) => {
-            if (nodeErr) {
-                console.error("[Step 1] Error finalizing node statement:", nodeErr.message);
-                db.run("ROLLBACK;");
-                return reject(nodeErr);
-            }
-            console.log('[Step 1] Node statement finalized.');
-
+            if (nodeErr) { db.run("ROLLBACK;"); return reject(nodeErr); }
             db.run("COMMIT;", (commitErr) => {
-                if (commitErr) {
-                    console.error("[Step 1] Error committing transaction:", commitErr.message);
-                    db.run("ROLLBACK;");
-                    return reject(commitErr);
-                }
-                
+                if (commitErr) { db.run("ROLLBACK;"); return reject(commitErr); }
                 console.log(`[Step 1] Successfully inserted ${lineIdCounter - 1} base lines.`);
-                
-                // *** 關鍵 ***
-                // 呼叫成功回呼 (onSuccess)，觸發第二步
                 onSuccess(); 
             });
         });
@@ -234,220 +173,89 @@ function processHighwayGeoJSON(db, reject, onSuccess) {
 }
 
 /**
- * (第 2 步) 讀取 osm-walk.geojson 並更新現有線路的 sidewalk 資訊
- * @param {sqlite3.Database} db - 資料庫實例
- * @param {Function} resolve - 成功時呼叫的 Promise resolve 函式 (這裡被當作 onSuccess)
- * @param {Function} reject - 失敗時呼叫的 Promise reject 函式
+ * (第 2 步) 讀取 osm-walk.geojson ...
  */
 function updateSidewalksFromGeoJSON(db, resolve, reject) {
-    // ... (此函式保持不變) ...
+    // ... (您上一回合的完整程式碼) ...
+    // ... (確保在最終的 db.run("COMMIT;", ...) 中呼叫 resolve()) ...
     let walkGeoJSON;
     try {
         walkGeoJSON = JSON.parse(fs.readFileSync('./osm-walk.geojson', 'utf8'));
     } catch (err) {
-        console.error("[Step 2] Error reading osm-walk.geojson:", err.message);
         console.warn("[Step 2] Skipping sidewalk update as osm-walk.geojson could not be read.");
         return resolve();
     }
-    
-    console.log(`[Step 2] Total walk features found: ${walkGeoJSON.features.length}`);
-
-    const lineFeatures = walkGeoJSON.features.filter(feature => {
-        return feature.geometry.type === 'LineString';
-    });
-    console.log(`[Step 2] Filtered LineString features: ${lineFeatures.length}`);
-
-    const updateLineSql = `
-        UPDATE Lines
-        SET sidewalk = ?
-        WHERE
-            (start_lat = ? AND start_lng = ? AND end_lat = ? AND end_lng = ?)
-            OR
-            (start_lat = ? AND start_lng = ? AND end_lat = ? AND end_lng = ?)
-    `;
-
+    const lineFeatures = walkGeoJSON.features.filter(feature => feature.geometry.type === 'LineString');
+    const updateLineSql = `UPDATE Lines SET sidewalk = ? WHERE (start_lat = ? AND start_lng = ? AND end_lat = ? AND end_lng = ?) OR (start_lat = ? AND start_lng = ? AND end_lat = ? AND end_lng = ?)`;
     db.run("BEGIN TRANSACTION;");
-
     const updateStmt = db.prepare(updateLineSql);
     let updatedCount = 0; 
-
     lineFeatures.forEach(element => {
         const properties = element.properties || {};
         const sidewalk = (properties["sidewalk"] === "no") ? null : properties["sidewalk"]; 
-
-        if (!sidewalk) {
-            return;
-        }
-
+        if (!sidewalk) return;
         let last = null;
-
         element.geometry.coordinates.forEach(coordRaw => {
-            let coord = {
-                lat: coordRaw[1],
-                lng: coordRaw[0]
-            };
-
-            if (!last) {
-                last = coord;
-                return;
-            }
-
-            // console.log(`[Step 2] Updating sidewalk for segment: (${last.lat}, ${last.lng}) -> (${coord.lat}, ${coord.lng}) to "${sidewalk}"`);
-
-            updateStmt.run(
-                sidewalk,      // 1. SET sidewalk = ?
-                last.lat,      // 2. start_lat (A)
-                last.lng,      // 3. start_lng (A)
-                coord.lat,     // 4. end_lat (B)
-                coord.lng,     // 5. end_lng (B)
-                coord.lat,     // 6. start_lat (B)
-                coord.lng,     // 7. start_lng (B)
-                last.lat,      // 8. end_lat (A)
-                last.lng,      // 9. end_lng (A)
-                function(err) {
-                    if (err) return; 
-                    if (this.changes > 0) {
-                        updatedCount += this.changes;
-                    }
-                }
-            );
-
+            let coord = { lat: coordRaw[1], lng: coordRaw[0] };
+            if (!last) { last = coord; return; }
+            updateStmt.run(sidewalk, last.lat, last.lng, coord.lat, coord.lng, coord.lat, coord.lng, last.lat, last.lng, function(err) {
+                if (err) return; 
+                if (this.changes > 0) updatedCount += this.changes;
+            });
             last = coord;
         });
     });
-
     updateStmt.finalize((err) => {
-        if (err) {
-            console.error("[Step 2] Error finalizing update statement:", err.message);
-            db.run("ROLLBACK;");
-            return reject(err);
-        }
-        console.log('[Step 2] Update statement finalized.');
-
+        if (err) { db.run("ROLLBACK;"); return reject(err); }
         db.run("COMMIT;", (commitErr) => {
-            if (commitErr) {
-                console.error("[Step 2] Error committing transaction:", commitErr.message);
-                db.run("ROLLBACK;");
-                return reject(commitErr);
-            }
-            
+            if (commitErr) { db.run("ROLLBACK;"); return reject(commitErr); }
             console.log(`[Step 2] Sidewalk update complete. ${updatedCount} segment updates executed.`);
-            
-            // *** 關鍵 ***
-            // 呼叫 resolve() (作為 onSuccess)，
-            // 告訴 initializeDatabase() 進行第三步
             resolve();
         });
     });
 }
 
 /**
- * *** 新增函式 ***
- * (第 3 步) 處理 bike.geojson 檔案並寫入資料庫
- * @param {sqlite3.Database} db - 資料庫實例
- * @param {Function} resolve - 成功時呼叫的 Promise resolve 函式
- * @param {Function} reject - 失敗時呼叫的 Promise reject 函式
+ * (第 3 步) 處理 bike.geojson ...
  */
 function processBikeGeoJSON(db, resolve, reject) {
+    // ... (您上一回合的完整程式碼) ...
+    // ... (確保在最終的 db.run("COMMIT;", ...) 中呼叫 resolve()) ...
     let bikeGeoJSON;
     try {
         bikeGeoJSON = JSON.parse(fs.readFileSync('./bike.geojson', 'utf8'));
     } catch (err) {
-        console.error("[Step 3] Error reading bike.geojson:", err.message);
         console.warn("[Step 3] Skipping bike lane import as bike.geojson could not be read.");
-        return resolve(); // 即使失敗也 resolve，因為這不是關鍵步驟
+        return resolve(); 
     }
-
-    console.log(`[Step 3] Total bike features found: ${bikeGeoJSON.features.length}`);
-
-    const lineFeatures = bikeGeoJSON.features.filter(feature => {
-        return feature.geometry.type === 'LineString';
-    });
-    console.log(`[Step 3] Filtered LineString features: ${lineFeatures.length}`);
-
-    // INSERT 語句 (不含 sidewalk)
+    const lineFeatures = bikeGeoJSON.features.filter(feature => feature.geometry.type === 'LineString');
     const insertBikeSql = `INSERT INTO Bike (id, name, rd_from, start_lat, start_lng, end_lat, end_lng) VALUES (?, ?, ?, ?, ?, ?, ?)`;
-    // 同樣寫入 Nodes 表
     const insertNodeSql = `INSERT OR IGNORE INTO Nodes (lat, lng) VALUES (?, ?)`;
-
     db.run("BEGIN TRANSACTION;");
-
     const bikeStmt = db.prepare(insertBikeSql);
     const nodeStmt = db.prepare(insertNodeSql);
-    let lineIdCounter = 1; // Bike 表使用獨立的 ID 計數器
-
+    let lineIdCounter = 1; 
     lineFeatures.forEach(element => {
         let last = null;
-        
         const properties = element.properties || {};
-        // *** 關鍵：使用 "路段名稱" ***
         const roadName = properties["路段名稱"] || null; 
-
         element.geometry.coordinates.forEach(coordRaw => {
-            let coord = {
-                lat: coordRaw[1],
-                lng: coordRaw[0]
-            };
-
-            // 寫入
+            let coord = { lat: coordRaw[1], lng: coordRaw[0] };
             nodeStmt.run(coord.lat, coord.lng);
-
-            if (!last) {
-                last = coord;
-                return;
-            }
-
-            const line = {
-                id: lineIdCounter,
-                name: `bike${lineIdCounter}`, // 給定一個唯一的 name
-                start: last,
-                end: coord
-            };
-            
-            // 執行 INSERT (7 個參數)
-            bikeStmt.run(
-                line.id, 
-                line.name, 
-                roadName, // <-- 來自 "路段名稱"
-                line.start.lat, 
-                line.start.lng, 
-                line.end.lat, 
-                line.end.lng
-            );
-
+            if (!last) { last = coord; return; }
+            const line = { id: lineIdCounter, name: `bike${lineIdCounter}`, start: last, end: coord };
+            bikeStmt.run(line.id, line.name, roadName, line.start.lat, line.start.lng, line.end.lat, line.end.lng);
             lineIdCounter++;
             last = coord;
         });
     });
-
     bikeStmt.finalize((err) => {
-        if (err) {
-            console.error("[Step 3] Error finalizing bike statement:", err.message);
-            db.run("ROLLBACK;");
-            return reject(err);
-        }
-        console.log('[Step 3] Bike statement finalized.');
-
+        if (err) { db.run("ROLLBACK;"); return reject(err); }
         nodeStmt.finalize((nodeErr) => {
-            if (nodeErr) {
-                console.error("[Step 3] Error finalizing node statement:", nodeErr.message);
-                db.run("ROLLBACK;");
-                return reject(nodeErr);
-            }
-            console.log('[Step 3] Node statement finalized.');
-
+            if (nodeErr) { db.run("ROLLBACK;"); return reject(nodeErr); }
             db.run("COMMIT;", (commitErr) => {
-                if (commitErr) {
-                    console.error("[Step 3] Error committing transaction:", commitErr.message);
-                    db.run("ROLLBACK;");
-                    return reject(commitErr);
-                }
-                
+                if (commitErr) { db.run("ROLLBACK;"); return reject(commitErr); }
                 console.log(`[Step 3] Successfully inserted ${lineIdCounter - 1} bike lines.`);
-                
-                // *** 關鍵 ***
-                // 這是最後一步，呼叫 resolve()
-                // 告訴 initializeDatabase() 整個程序已完成
                 resolve(); 
             });
         });
@@ -455,112 +263,152 @@ function processBikeGeoJSON(db, resolve, reject) {
 }
 
 
-// --- (其餘函式保持不變) ---
+// --- (其餘的資料庫存取函式) ---
+// ... (findNodesInBounds, closeDatabase, findLinesConnectedToNodesInBounds, ...)
+// ... (fetchAllLines, fetchAllBikeLines, updateLinesBikeStatus) ...
+// ... (這些函式與您上一回合的程式碼完全相同，請保留它們) ...
 
-/**
- * 查詢在指定經緯度範圍內的節點
- * (... 程式碼不變 ...)
- */
 function findNodesInBounds(latMin, latMax, lngMin, lngMax) {
     return new Promise((resolve, reject) => {
-        const sql = `
-            SELECT * FROM Nodes 
-            WHERE lat BETWEEN ? AND ? 
-              AND lng BETWEEN ? AND ?
-        `;
-        const params = [latMin, latMax, lngMin, lngMax];
-
-        db.all(sql, params, (err, rows) => {
-            if (err) {
-                console.error('Error querying nodes in bounds:', err.message);
-                reject(err);
-            } else {
-                resolve(rows);
-            }
+        const sql = `SELECT * FROM Nodes WHERE lat BETWEEN ? AND ? AND lng BETWEEN ? AND ?`;
+        db.all(sql, [latMin, latMax, lngMin, lngMax], (err, rows) => {
+            if (err) { reject(err); } else { resolve(rows); }
         });
     });
 }
 
-/**
- * 關閉資料庫連線 (用於程式結束時)
- * (... 程式碼不變 ...)
- */
 function closeDatabase() {
     return new Promise((resolve, reject) => {
         db.close((err) => {
-            if (err) {
-                console.error('Error closing database:', err.message);
-                return reject(err);
-            }
-            console.log('Database connection closed.');
-            resolve();
+            if (err) { reject(err); } else { console.log('Database connection closed.'); resolve(); }
         });
     });
 }
 
-/**
- * 查詢連接到指定範圍內節點的線路
- * (... 程式碼不變 ...)
- */
 function findLinesConnectedToNodesInBounds(latMin, latMax, lngMin, lngMax) {
     return new Promise((resolve, reject) => {
         const sql = `
-            WITH InBoundNodes AS (
-                SELECT lat, lng
-                FROM Nodes
-                WHERE lat BETWEEN ? AND ?
-                  AND lng BETWEEN ? AND ?
-            )
-            SELECT T1.*
-            FROM Lines AS T1
-            WHERE
-                (T1.start_lat, T1.start_lng) IN (SELECT lat, lng FROM InBoundNodes)
-            OR
-                (T1.end_lat, T1.end_lng) IN (SELECT lat, lng FROM InBoundNodes);
+            WITH InBoundNodes AS (SELECT lat, lng FROM Nodes WHERE lat BETWEEN ? AND ? AND lng BETWEEN ? AND ?)
+            SELECT T1.* FROM Lines AS T1
+            WHERE (T1.start_lat, T1.start_lng) IN (SELECT lat, lng FROM InBoundNodes)
+            OR (T1.end_lat, T1.end_lng) IN (SELECT lat, lng FROM InBoundNodes);
         `;
-        
-        const params = [latMin, latMax, lngMin, lngMax];
-
-        db.all(sql, params, (err, rows) => {
-            if (err) {
-                console.error('Error querying lines connected to nodes in bounds:', err.message);
-                reject(err);
-            } else {
-                resolve(rows);
-            }
+        db.all(sql, [latMin, latMax, lngMin, lngMax], (err, rows) => {
+            if (err) { reject(err); } else { resolve(rows); }
         });
     });
 }
 
-/**
- * 根據 line_id 查詢與其端點相連的所有線路
- * (... 程式碼不變 ...)
- */
 function findLinesConnectedToLine(lineId) {
     return new Promise((resolve, reject) => {
         const sql = `
             WITH TargetLineNodes AS (
-                SELECT start_lat AS lat, start_lng AS lng
-                FROM Lines
-                WHERE id = ?
+                SELECT start_lat AS lat, start_lng AS lng FROM Lines WHERE id = ?
                 UNION
-                SELECT end_lat AS lat, end_lng AS lng
-                FROM Lines
-                WHERE id = ?
+                SELECT end_lat AS lat, end_lng AS lng FROM Lines WHERE id = ?
             )
-            SELECT T1.*
-            FROM Lines AS T1
-            WHERE
-                (T1.start_lat, T1.start_lng) IN (SELECT lat, lng FROM TargetLineNodes)
-            OR
-                (T1.end_lat, T1.end_lng) IN (SELECT lat, lng FROM TargetLineNodes);
+            SELECT T1.* FROM Lines AS T1
+            WHERE (T1.start_lat, T1.start_lng) IN (SELECT lat, lng FROM TargetLineNodes)
+            OR (T1.end_lat, T1.end_lng) IN (SELECT lat, lng FROM TargetLineNodes);
         `;
-        
-        const params = [lineId, lineId];
+        db.all(sql, [lineId, lineId], (err, rows) => {
+            if (err) { reject(err); } else { resolve(rows); }
+        });
+    });
+}
 
-        db.all(sql, params, (err, rows) => {
+function fetchAllLines() {
+    return new Promise((resolve, reject) => {
+        console.log("Fetching all lines from 'Lines' table for matching...");
+        const sql = "SELECT id, start_lat, start_lng, end_lat, end_lng FROM Lines";
+        db.all(sql, [], (err, rows) => {
+            if (err) { reject(err); } else { resolve(rows); }
+        });
+    });
+}
+
+function fetchAllBikeLines() {
+    return new Promise((resolve, reject) => {
+        console.log("Fetching all lines from 'Bike' table for matching...");
+        const sql = "SELECT start_lat, start_lng, end_lat, end_lng FROM Bike";
+        db.all(sql, [], (err, rows) => {
+            if (err) { reject(err); } else { resolve(rows); }
+        });
+    });
+}
+
+/**
+ * *** 新增函式 (已修復並改為 Async) ***
+ * 批次更新 'Lines' 表，將 'bike' 欄位設為 1
+ * (此版本會依序執行 chunks，以避免交易衝突)
+ * @param {Array<number>} matchedLineIds - 包含所有匹配上的 Line ID 的陣列
+ * @returns {Promise<number>} - 成功更新的行數
+ */
+async function updateLinesBikeStatus(matchedLineIds) {
+    if (!Array.isArray(matchedLineIds) || matchedLineIds.length === 0) {
+        console.log("No line IDs provided to update bike status.");
+        return 0; // 0 筆變更
+    }
+
+    console.log(`Preparing to update ${matchedLineIds.length} lines as bike lanes (in chunks)...`);
+    
+    const chunkSize = 900;
+    let totalChanges = 0; // 我們將在此累計總變更數
+
+    // 關鍵：我們不再使用 Promise.all，而是使用一個會暫停的 for 迴圈
+    for (let i = 0; i < matchedLineIds.length; i += chunkSize) {
+        const chunk = matchedLineIds.slice(i, i + chunkSize);
+        
+        console.log(`  ... Processing chunk ${Math.floor(i / chunkSize) + 1} (IDs: ${chunk[0]}...${chunk[chunk.length-1]})`);
+
+        // 'await' 會暫停 for 迴圈，直到這個 chunk 的 Promise 完成
+        const changes = await new Promise((chunkResolve, chunkReject) => {
+            const placeholders = chunk.map(() => '?').join(',');
+            const sql = `UPDATE Lines SET bike = 1 WHERE id IN (${placeholders})`;
+
+            // 1. 開始此 chunk 的交易
+            db.run("BEGIN TRANSACTION;");
+            
+            db.run(sql, chunk, function(err) {
+                if (err) {
+                    console.error("Error updating bike status chunk:", err.message);
+                    db.run("ROLLBACK;");
+                    return chunkReject(err);
+                }
+
+                const numChanges = this.changes;
+                
+                // 2. 提交此 chunk 的交易
+                db.run("COMMIT;", (commitErr) => {
+                    if (commitErr) {
+                        console.error("Error committing bike status update chunk:", commitErr.message);
+                        db.run("ROLLBACK;");
+                        return chunkReject(commitErr);
+                    }
+                    
+                    // 3. 交易成功，Resolve 這個 chunk
+                    chunkResolve(numChanges); 
+                });
+            });
+        });
+
+        // 'await' 已解除，將此 chunk 的變更數加總
+        totalChanges += changes;
+    }
+
+    // 迴圈完成，所有 chunks 都已依序處理
+    console.log(`[Update] Successfully marked ${totalChanges} lines as bike lanes in total.`);
+    return totalChanges; // 回傳總數
+}
+
+/**
+ * 尋找所有線路
+ */
+function findAllLines() {
+    return new Promise((resolve, reject) => {
+        const sql = `SELECT * FROM Lines`;
+        db.all(sql, [], (err, rows) => {
             if (err) {
-                console.error('Error querying lines connected to line ID:', err.message);
                 reject(err);
             } else {
                 resolve(rows);
@@ -570,11 +418,15 @@ function findLinesConnectedToLine(lineId) {
 }
 
 
-// 匯出(Export)這些函式
+// 匯出(Export)所有函式
 module.exports = {
     initializeDatabase,
     findNodesInBounds,
     closeDatabase,
     findLinesConnectedToNodesInBounds,
-    findLinesConnectedToLine 
+    findLinesConnectedToLine,
+    fetchAllLines,
+    fetchAllBikeLines,
+    updateLinesBikeStatus,
+    findAllLines
 };
