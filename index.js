@@ -223,7 +223,7 @@ async function startServer() {
         console.log("Database successfully initialized.");
 
         // 2. 資料庫準備就緒後，才啟動 Web 伺服器
-        app.listen(PORT, () => {
+        app.listen(PORT, "0.0.0.0", () => {
             console.log(`Server listening on http://localhost:${PORT}`);
             console.log(
                 "Try visiting: http://localhost:5121/nodes/in-bounds?latMin=25.01&latMax=25.02&lngMin=121.540&lngMax=121.542"
