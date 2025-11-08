@@ -57,10 +57,27 @@ function isInRact(ract, point) {
     return m >= 0 && m <= 1 && n >= 0 && n <= 1;
 }
 
+/**
+ * 判斷兩條線段是否平行
+ * @param {Array<Number>} param0 - 第一條線段的起點 [x, y]
+ * @param {Array<Number>} param1 - 第一條線段的終點 [x, y]
+ * @param {Array<Number>} param2 - 第二條線段的起點 [x, y]
+ * @param {Array<Number>} param3 - 第二條線段的終點 [x, y]
+ * @returns {boolean} - 如果平行則返回 true，否則返回 false
+ */
+function isParallel([a1x, a1y], [a2x, a2y], [b1x, b1y], [b2x, b2y]) {
+    const EPS = 8e-7;
+    const ax = a2x - a1x;
+    const ay = a2y - a1y;
+    const bx = b2x - b1x;
+    const by = b2y - b1y;
+    return Math.abs(ax * by - ay * bx) < EPS;
+}
 // 測試
 
 module.exports = {
     leftMultipMatrix,
     isInRact,
     invertMatrix,
+    isParallel,
 };

@@ -1,7 +1,7 @@
 // 檔名: databaseServiceExtension.js
 
 // 引入 isInRact 函數
-let { isInRact } = require("./MathHelper");
+let { isInRact, isParallel } = require("./MathHelper");
 /**
  * @class DatabaseServiceExtension
  * 處理資料庫初始化後的高階、複雜的業務邏輯，
@@ -21,8 +21,8 @@ class DatabaseServiceExtension {
         // --- 1. 定義矩形的半徑/寬度 (Buffer) ---
         // 這個值決定了橘色矩形有多寬。您可以根據經緯度的實際比例調整。
         // 例如，0.0001 大約對應 10 公尺。
-        const buffer = 0.0005; // 緩衝區寬度
-        const buffer_rapid = 0.1; // 斜率容差
+        const buffer = 0.0002; // 緩衝區距離
+        const buffer_rapid = 0.01; // 斜率容差
 
         // --- 2. 計算 bikeLine 的向量 ---
         const bike_start = { x: bikeLine.start_lng, y: bikeLine.start_lat };
@@ -75,13 +75,8 @@ class DatabaseServiceExtension {
         const isStartIn = isInRact(ract, line_start_point);
         const isEndIn = isInRact(ract, line_end_point);
 
-        const line_rapid = (line_start_point[0]-line_end_point[0])/(line_start_point[1]-line_end_point[1])
-        const bike_rapid = (bike_start.x-bike_end.x)/(bike_start.y-bike_end.y)
-        
-        
-        const sameR = Math.abs(((line_rapid / bike_rapid) - 1) < buffer_rapid ? true : false)
-
-        return (isStartIn && isEndIn) && sameR;
+        // --- 7. 回傳最終比對結果 ---
+        return (isStartIn && isEndIn) && isParallel(line_start_point, line_end_point, [bike_start.x, bike_start.y], [bike_end.x, bike_end.y]);
     }
 
     /**
