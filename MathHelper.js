@@ -66,7 +66,7 @@ function isInRact(ract, point) {
  * @returns {boolean} - 如果平行則返回 true，否則返回 false
  */
 function isParallel([a1x, a1y], [a2x, a2y], [b1x, b1y], [b2x, b2y]) {
-    const EPS = 0.1;
+    const EPS = 8e-7;
     const ax = a2x - a1x;
     const ay = a2y - a1y;
     const bx = b2x - b1x;

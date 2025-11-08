@@ -21,7 +21,7 @@ class DatabaseServiceExtension {
         // --- 1. 定義矩形的半徑/寬度 (Buffer) ---
         // 這個值決定了橘色矩形有多寬。您可以根據經緯度的實際比例調整。
         // 例如，0.0001 大約對應 10 公尺。
-        const buffer = 0.00; 
+        const buffer = 0.0002; // 緩衝區距離
         const buffer_rapid = 0.01; // 斜率容差
 
         // --- 2. 計算 bikeLine 的向量 ---
