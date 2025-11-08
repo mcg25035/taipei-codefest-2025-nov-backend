@@ -4,6 +4,9 @@ const fs = require('fs');
 const sqlite3 = require('sqlite3').verbose();
 const { DatabaseServiceExtension } = require('./databaseServiceExtension.js'); // *** 1. 匯入 Extension ***
 
+// *** 1. 新增：讀取環境變數開關 ***
+const SKIP_INIT = process.env.SKIP_DB_INIT === 'true';
+
 let db;
 
 /**
@@ -59,9 +62,10 @@ function initializeDatabase() {
 
         // 5. db.serialize 確保 SQL 語句依序執行
         db.serialize(() => {
+            // (確保資料表存在 - 這一步總是安全的)
             db.run(createTableSql, (err) => {
                 if (err) return reject(err);
-                console.log('Table "Lines" is ready (with "bike" column).');
+                console.log('Table "Lines" is ready.');
             });
             db.run(createNodesTableSql, (err) => {
                 if (err) return reject(err);
@@ -72,56 +76,70 @@ function initializeDatabase() {
                 console.log('Table "Bike" is ready.');
             });
 
-            console.log('Clearing existing data from tables...');
-            db.run(`DELETE FROM Lines;`, (err) => { if (err) return reject(err); });
-            db.run(`DELETE FROM Nodes;`, (err) => { if (err) return reject(err); });
-            db.run(`DELETE FROM Bike;`, (err) => { if (err) return reject(err); });
-
-
-            // 6. 啟動四階段處理
-            db.run("SELECT 1", (err) => {
-                if (err) return reject(err);
+            // *** 2. 關鍵修改：檢查開關 ***
+            if (SKIP_INIT) {
+                // 如果開關為 true，跳過所有資料載入步驟
+                console.warn('SKIP_DB_INIT=true. Skipping data (re)load.');
+                console.log('Using existing database data.');
                 
-                console.log('Database setup complete. Starting Step 1: Processing highway.geojson...');
-                
-                // 執行第一步：載入基礎道路
-                processHighwayGeoJSON(db, reject, () => {
-                    // 第一步成功的回呼
-                    console.log('Step 1 complete. Starting Step 2: Updating sidewalks...');
-                    
-                    // 執行第二步：更新人行道資訊
-                    updateSidewalksFromGeoJSON(db, () => {
-                        // 第二步成功的回呼
-                        console.log('Step 2 complete. Starting Step 3: Processing bike.geojson...');
-                        
-                        // 執行第三步：載入自行車道
-                        processBikeGeoJSON(db, () => {
-                            // 第三步成功的回呼
-                            console.log('Step 3 complete. Starting Step 4: Complex bike matching (Extension)...');
-                            
-                            // *** 2. 關鍵修改 ***
-                            // 不是直接 resolve()，而是呼叫 Extension
-                            
-                            const extension = new DatabaseServiceExtension();
-                            
-                            // 呼叫 hook，並將此模組的函式作為參數注入
-                            extension.startHook({
-                                fetchAllLines,
-                                fetchAllBikeLines,
-                                updateLinesBikeStatus
-                            })
-                            .then(() => {
-                                // 當 Hook 完成後，才真正 resolve
-                                console.log('Step 4 complete. All database tasks finished.');
-                                resolve(); 
-                            })
-                            .catch(reject); // 如果 hook 出錯，則 reject 整個
-                            
-                        }, reject); // 傳入 reject 供第三步使用
-
-                    }, reject); // 傳入 reject 供第二步使用
+                // 執行一個無意義的查詢，以確保隊列中的 CREATE TABLE 已完成
+                db.run("SELECT 1", (err) => {
+                    if (err) return reject(err);
+                    resolve(); // 立刻 resolve，表示資料庫已就緒
                 });
-            });
+
+            } else {
+                // 否則，執行完整的初始化流程 (您原本的程式碼)
+                console.log('SKIP_DB_INIT is not set. Starting full database initialization...');
+
+                console.log('Clearing existing data from tables...');
+                db.run(`DELETE FROM Lines;`, (err) => { if (err) return reject(err); });
+                db.run(`DELETE FROM Nodes;`, (err) => { if (err) return reject(err); });
+                db.run(`DELETE FROM Bike;`, (err) => { if (err) return reject(err); });
+
+
+                // 6. 啟動四階段處理
+                db.run("SELECT 1", (err) => {
+                    if (err) return reject(err);
+                    
+                    console.log('Database setup complete. Starting Step 1: Processing highway.geojson...');
+                    
+                    // 執行第一步：載入基礎道路
+                    processHighwayGeoJSON(db, reject, () => {
+                        // 第一步成功的回呼
+                        console.log('Step 1 complete. Starting Step 2: Updating sidewalks...');
+                        
+                        // 執行第二步：更新人行道資訊
+                        updateSidewalksFromGeoJSON(db, () => {
+                            // 第二步成功的回呼
+                            console.log('Step 2 complete. Starting Step 3: Processing bike.geojson...');
+                            
+                            // 執行第三步：載入自行車道
+                            processBikeGeoJSON(db, () => {
+                                // 第三步成功的回呼
+                                console.log('Step 3 complete. Starting Step 4: Complex bike matching (Extension)...');
+                                
+                                const extension = new DatabaseServiceExtension();
+                                
+                                // 呼叫 hook
+                                extension.startHook({
+                                    fetchAllLines,
+                                    fetchAllBikeLines,
+                                    updateLinesBikeStatus
+                                })
+                                .then(() => {
+                                    // 當 Hook 完成後，才真正 resolve
+                                    console.log('Step 4 complete. All database tasks finished.');
+                                    resolve(); 
+                                })
+                                .catch(reject); // 如果 hook 出錯，則 reject 整個
+                                
+                            }, reject); // 傳入 reject 供第三步使用
+
+                        }, reject); // 傳入 reject 供第二步使用
+                    });
+                });
+            }
         });
     });
 }
@@ -133,8 +151,6 @@ function initializeDatabase() {
  * (第 1 步) 處理 highway.geojson ...
  */
 function processHighwayGeoJSON(db, reject, onSuccess) {
-    // ... (您上一回合的完整程式碼) ...
-    // ... (確保在最終的 db.run("COMMIT;", ...) 中呼叫 onSuccess()) ...
     const highwayGeoJSON = JSON.parse(fs.readFileSync('./highway.geojson', 'utf8'));
     console.log(`[Step 1] Total highway features found: ${highwayGeoJSON.features.length}`);
     const lineFeatures = highwayGeoJSON.features.filter(feature => feature.geometry.type === 'LineString');
@@ -176,8 +192,6 @@ function processHighwayGeoJSON(db, reject, onSuccess) {
  * (第 2 步) 讀取 osm-walk.geojson ...
  */
 function updateSidewalksFromGeoJSON(db, resolve, reject) {
-    // ... (您上一回合的完整程式碼) ...
-    // ... (確保在最終的 db.run("COMMIT;", ...) 中呼叫 resolve()) ...
     let walkGeoJSON;
     try {
         walkGeoJSON = JSON.parse(fs.readFileSync('./osm-walk.geojson', 'utf8'));
@@ -219,8 +233,6 @@ function updateSidewalksFromGeoJSON(db, resolve, reject) {
  * (第 3 步) 處理 bike.geojson ...
  */
 function processBikeGeoJSON(db, resolve, reject) {
-    // ... (您上一回合的完整程式碼) ...
-    // ... (確保在最終的 db.run("COMMIT;", ...) 中呼叫 resolve()) ...
     let bikeGeoJSON;
     try {
         bikeGeoJSON = JSON.parse(fs.readFileSync('./bike.geojson', 'utf8'));
@@ -264,9 +276,7 @@ function processBikeGeoJSON(db, resolve, reject) {
 
 
 // --- (其餘的資料庫存取函式) ---
-// ... (findNodesInBounds, closeDatabase, findLinesConnectedToNodesInBounds, ...)
-// ... (fetchAllLines, fetchAllBikeLines, updateLinesBikeStatus) ...
-// ... (這些函式與您上一回合的程式碼完全相同，請保留它們) ...
+// ... (這些函式與您上一回合的程式碼完全相同) ...
 
 function findNodesInBounds(latMin, latMax, lngMin, lngMax) {
     return new Promise((resolve, reject) => {
