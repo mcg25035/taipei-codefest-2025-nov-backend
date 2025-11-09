@@ -5,7 +5,8 @@ const sqlite3 = require('sqlite3').verbose();
 const { DatabaseServiceExtension } = require('./databaseServiceExtension.js'); // *** 1. 匯入 Extension ***
 
 // *** 1. 新增：讀取環境變數開關 ***
-const SKIP_INIT = process.env.SKIP_DB_INIT === 'true';
+// const SKIP_INIT = process.env.SKIP_DB_INIT === 'true';
+const SKIP_INIT = true;
 
 let db;
 
@@ -362,8 +363,34 @@ function findNearestLine(lat, lng) {
             if (err) { reject(err); } else { resolve(row); }
         });
     }
-
 )}
+
+function findNearLines(lat, lng, lineCount) {
+    // find the nearest N lines to the point
+    return new Promise((resolve, reject) => {
+        const sql = `
+            SELECT *, 
+            ((start_lat - ?)*(start_lat - ?) + (start_lng - ?)*(start_lng - ?)) AS dist_start,
+            ((end_lat - ?)*(end_lat - ?) + (end_lng - ?)*(end_lng - ?)) AS dist_end
+            FROM Lines
+            ORDER BY MIN(dist_start, dist_end) ASC
+            LIMIT ?
+        `;
+        db.all(sql, [lat, lat, lng, lng, lat, lat, lng, lng, lineCount], (err, rows) => {
+            if (err) { reject(err); } else { resolve(rows); }
+        });
+    });
+}
+
+function filterLinesByDistance(lines, lat, lng, maxDistance) {
+    // filter lines by distance to the point
+    return lines.filter(line => {
+        const distStart = Math.sqrt((line.start_lat - lat) ** 2 + (line.start_lng - lng) ** 2);
+        const distEnd = Math.sqrt((line.end_lat - lat) ** 2 + (line.end_lng - lng) ** 2);
+        const minDist = Math.min(distStart, distEnd);
+        return minDist <= maxDistance;
+    });
+}
 
 /**
  * *** 新增函式 (已修復並改為 Async) ***
@@ -457,5 +484,7 @@ module.exports = {
     fetchAllBikeLines,
     updateLinesBikeStatus,
     findAllLines,
-    findNearestLine
+    findNearestLine,
+    findNearLines,
+    filterLinesByDistance,
 };

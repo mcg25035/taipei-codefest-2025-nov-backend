@@ -57,6 +57,49 @@ function isInRact(ract, point) {
     return m >= 0 && m <= 1 && n >= 0 && n <= 1;
 }
 
+
+
+/**
+ * 計算 v1 和 v2 之間的最小夾角 (unsigned angle)。
+ * @param {object} v1 - 第一個向量, 例如 { x: 1, y: 0 }
+ * @param {object} v2 - 第二個向量, 例如 { x: 0, y: 1 }
+ * @returns {number} - 夾角 (degree)
+ */
+function angleBetween(v1, v2) {
+  const dot = v1[0] * v2[0] + v1[1] * v2[1];
+  const mag1 = Math.sqrt(v1[0] * v1[0] + v1[1] * v1[1]);
+  const mag2 = Math.sqrt(v2[0] * v2[0] + v2[1] * v2[1]);
+
+  // 檢查是否為 0 向量
+  if (mag1 === 0 || mag2 === 0) {
+    return 0; // 0 向量與任何向量的夾角定義為 0
+  }
+
+  // 計算 cos(theta)
+  let cosTheta = dot / (mag1 * mag2);
+
+  // 處理浮點數誤差，確保 cosTheta 在 [-1, 1] 範圍內
+  cosTheta = Math.max(-1, Math.min(1, cosTheta));
+
+  // 使用 acos 取得角度
+  return Math.acos(cosTheta) * (180 / Math.PI); // 轉換為度數
+}
+
+function len(v) {
+    return Math.sqrt(v[0] * v[0] + v[1] * v[1]);
+}
+
+function cross(v1, v2) {
+    return v1[0] * v2[1] - v1[1] * v2[0];
+}
+
+function diff(v1, v2) {
+    vp = {x: v1[0] / len(v1), y: v1[1] / len(v1)};
+    vq = {x: v2[0] / len(v2), y: v2[1] / len(v2)};
+
+    c = Math.abs(cross(vp, vq));
+}
+
 /**
  * 判斷兩條線段是否平行
  * @param {Array<Number>} param0 - 第一條線段的起點 [x, y]
@@ -66,7 +109,8 @@ function isInRact(ract, point) {
  * @returns {boolean} - 如果平行則返回 true，否則返回 false
  */
 function isParallel([a1x, a1y], [a2x, a2y], [b1x, b1y], [b2x, b2y]) {
-    const EPS = 8e-7;
+    if (!a1x || !a1y || !a2x || !a2y || !b1x || !b1y || !b2x || !b2y) return false;
+    const EPS = 3e-7;
     const ax = a2x - a1x;
     const ay = a2y - a1y;
     const bx = b2x - b1x;
@@ -80,4 +124,6 @@ module.exports = {
     isInRact,
     invertMatrix,
     isParallel,
+    angleBetween,
+    diff
 };

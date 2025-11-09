@@ -6,6 +6,8 @@ const events = require("./events");
 
 // 導入我們的資料庫服務
 const databaseService = require("./databaseService");
+const { isParallel, angleBetween } = require("./MathHelper");
+const { userInfo } = require("os");
 
 app.use((req, res, next) => {
     console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
@@ -34,6 +36,7 @@ let userStatus = [
         id: "test-user",
         isInCarDangerZone: false,
         isCurrentRdBikeFriendly: false,
+        lastPosition: [0, 0],
     },
 ];
 
@@ -43,6 +46,22 @@ let getUser = (req) => {
 };
 
 let CAR_DANGER_THRESHOLD = 50; // 假設的閾值
+
+let latLngToPoint = (waystone) => {
+    return { x: waystone.lng, y: waystone.lat };
+};
+
+let pointToLatLng = (point) => {
+    return { lat: point.y, lng: point.x };
+};
+
+let pointArrayToLatLngArray = (points) => {
+    return points.map((p) => pointToLatLng(p));
+};
+
+let latLngArrayToPointArray = (latlngs) => {
+    return latlngs.map((ll) => latLngToPoint(ll));
+};
 
 let positionHistory = [];
 app.put("/interact", async (req, res) => {
@@ -63,62 +82,111 @@ app.put("/interact", async (req, res) => {
             .status(400)
             .json({ error: "Missing required parameter: lat" });
     }
-    
 
     switch (req.body.type) {
-    case "car": {
-        let tmp = accidentDataModule.query(req.body.lng, req.body.lat);
+        case "car": {
+            let tmp = accidentDataModule.query(req.body.lng, req.body.lat);
 
-        console.log("事故指數:", tmp);
+            console.log("事故指數:", tmp);
 
-        if (tmp > CAR_DANGER_THRESHOLD) {
-            if (userStatus[0].isInCarDangerZone) {
+            if (tmp > CAR_DANGER_THRESHOLD) {
+                if (userStatus[0].isInCarDangerZone) {
+                    return res.status(200).json({});
+                }
+                userStatus[0].isInCarDangerZone = true;
+                eventList.push(events.USER_ENTERED_DANGER_ZONE);
+            } else {
+                userStatus[0].isInCarDangerZone = false;
+            }
+
+            if (eventList.includes(events.USER_ENTERED_DANGER_ZONE)) {
+                return res.status(200).json({
+                    type: "car",
+                    message: "你現在進到高發事故危險區，請注意安全。",
+                });
+            }
+        }
+        case "bicycle":
+        case "bike":
+            if (
+                userStatus[0].lastPosition[0] === 0 &&
+                userStatus[0].lastPosition[1] === 0
+            ) {
+                userStatus[0].lastPosition = [req.body.lng, req.body.lat];
                 return res.status(200).json({});
             }
-            userStatus[0].isInCarDangerZone = true;
-            eventList.push(events.USER_ENTERED_DANGER_ZONE);
-        } else {
-            userStatus[0].isInCarDangerZone = false;
-        }
 
-        if ( eventList.includes(events.USER_ENTERED_DANGER_ZONE) ) {
-            return res.status(200).json({
-                "type": "car",
-                "message": "你現在進到高發事故危險區，請注意安全。"
-            });
-        }
-    } 
-    case "bike":
-        let predictNext2DPoint = require("./lib/predictNextPoint").predictNext2DPoint;
-
-        let predictedPoint = predictNext2DPoint(positionHistory, 5); // 預測 5 步後的位置
-        console.log("預測位置:", predictedPoint);
-
-        let line = await databaseService.findNearestLine(predictedPoint.x, predictedPoint.y)
-        let isNextRdBikeFriendly = (line.bike == 1);
-
-        if (isNextRdBikeFriendly != userStatus[0].isCurrentRdBikeFriendly) {
-            userStatus[0].isCurrentRdBikeFriendly = isNextRdBikeFriendly;
-
-            eventList.push(events.USER_BIKE_FRIENDLY_ROAD_STATUS_CHANGED);
-        }
+            let isNextRdBikeFriendly = false;
 
 
-        if (eventList.includes(events.USER_BIKE_FRIENDLY_ROAD_STATUS_CHANGED)) {
-            let msg = isNextRdBikeFriendly ? 
-                "前方道路為自行車友善道路，騎乘更舒適！" :
-                "前方道路非自行車友善道路，請注意安全！"; 
+            let vector = [
+                req.body.lng - userStatus[0].lastPosition[0],
+                req.body.lat - userStatus[0].lastPosition[1],
+            ];
 
-            return res.status(200).json({
-                "type": "bike",
-                "message": msg
-            });
-        }
-        
-        
-    break;
-    default:
-        return res.status(400).json({ error: "Invalid interaction type." });
+            userStatus[0].lastPosition = [req.body.lng, req.body.lat];
+
+            let lines = await databaseService.findNearLines(
+                req.body.lng,
+                req.body.lat,
+                4
+            );
+            for (let line of lines) {
+
+                console.log(line.id, line.start_lng, line.start_lat, line.end_lng, line.end_lat);
+
+
+                let angle1 = angleBetween(vector, [
+                    line.end_lng - line.start_lng,
+                    line.end_lat - line.start_lat,
+                ]);
+                let angle2 = angleBetween(vector, [
+                    line.start_lng - line.end_lng,
+                    line.start_lat - line.end_lat,
+                ]);
+
+                let angle = Math.min(Math.abs(angle1), Math.abs(angle2));
+
+                console.log("比較角度:", angle);
+                if (Math.abs(angle) < 30) {
+                    console.log(
+                        "找到符合方向的自行車友善道路:",
+                        line.id,
+                        "角度:",
+                        angle
+                    );
+                    isNextRdBikeFriendly = true;
+                }
+            }
+
+            if (
+                isNextRdBikeFriendly !== userStatus[0].isCurrentRdBikeFriendly
+            ) {
+                userStatus[0].isCurrentRdBikeFriendly = isNextRdBikeFriendly;
+                eventList.push(events.USER_BIKE_FRIENDLY_ROAD_STATUS_CHANGED);
+            }
+
+            if (
+                eventList.includes(
+                    events.USER_BIKE_FRIENDLY_ROAD_STATUS_CHANGED
+                )
+            ) {
+                let msg = isNextRdBikeFriendly
+                    ? "前方道路為自行車友善道路，騎乘更舒適！"
+                    : "前方道路非自行車友善道路，請注意安全！";
+
+                console.log("自行車道路狀態改變事件觸發:", msg);
+
+                return res.status(200).json({
+                    type: "bike",
+                    message: msg,
+                });
+            }
+
+            return res.status(200).json({});
+            break;
+        default:
+            return res.status(400).json({ error: "Invalid interaction type." });
     }
 });
 
@@ -129,7 +197,6 @@ app.put("/interact", async (req, res) => {
 //   } else {
 //     res.json({ message: 'Interaction received', lng: req.body.lng, lat: req.body.lat });
 //   }
-
 
 app.get("/line/nearest", async (req, res) => {
     if (!req.query.lng) {
@@ -148,7 +215,7 @@ app.get("/line/nearest", async (req, res) => {
             parseFloat(req.query.lng),
             parseFloat(req.query.lat)
         );
-        
+
         res.json({
             message: "Nearest line found.",
             line: nearestLine,
@@ -158,8 +225,6 @@ app.get("/line/nearest", async (req, res) => {
         res.status(500).json({ error: "Internal server error" });
     }
 });
-
-
 
 // --- 新增的 API 路由，使用 databaseService ---
 app.get("/nodes/in-bounds", async (req, res) => {
