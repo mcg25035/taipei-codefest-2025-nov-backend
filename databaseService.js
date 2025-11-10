@@ -365,6 +365,39 @@ function findNearestLine(lat, lng) {
     }
 )}
 
+function findLinesByHaveBikeSortByNearestInRange(lat, lng, range) {
+    // find lines that have bike = 1 and are within range, sorted by distance to the point
+    return new Promise((resolve, reject) => {
+        const sql = `
+            SELECT *, 
+            ((start_lat - ?)*(start_lat - ?) + (start_lng - ?)*(start_lng - ?)) AS dist_start,
+            ((end_lat - ?)*(end_lat - ?) + (end_lng - ?)*(end_lng - ?)) AS dist_end
+            FROM Lines
+            WHERE bike = 1
+            AND (
+                (start_lat BETWEEN ? AND ? AND start_lng BETWEEN ? AND ?)
+                OR
+                (end_lat BETWEEN ? AND ? AND end_lng BETWEEN ? AND ?)
+            )
+            ORDER BY MIN(dist_start, dist_end) ASC
+        `;
+        const latMin = lat - range;
+        const latMax = lat + range;
+        const lngMin = lng - range;
+        const lngMax = lng + range;
+        db.all(sql, [
+            lat, lat, lng, lng,
+            lat, lat, lng, lng,
+            latMin, latMax, lngMin, lngMax,
+            latMin, latMax, lngMin, lngMax
+        ], (err, rows) => {
+            if (err) { reject(err); } else { resolve(rows); }
+        });
+    });
+}
+
+
+
 function findNearLines(lat, lng, lineCount) {
     // find the nearest N lines to the point
     return new Promise((resolve, reject) => {
@@ -487,4 +520,5 @@ module.exports = {
     findNearestLine,
     findNearLines,
     filterLinesByDistance,
+    findLinesByHaveBikeSortByNearestInRange
 };

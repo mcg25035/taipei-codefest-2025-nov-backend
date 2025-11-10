@@ -16,7 +16,7 @@ const EXTENT = [
 function query(longitude, latitude, options = {
     bins: BINS, 
     extent: EXTENT
-}, radius = 5) {
+}, radius = 2) {
   try {
     const gridJson = readFileSync('grid.json', 'utf8');
     const grid = JSON.parse(gridJson);

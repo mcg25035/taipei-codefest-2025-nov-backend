@@ -6,8 +6,7 @@ const events = require("./events");
 
 // 導入我們的資料庫服務
 const databaseService = require("./databaseService");
-const { isParallel, angleBetween } = require("./MathHelper");
-const { userInfo } = require("os");
+const { isParallel, angleBetween, diff } = require("./MathHelper");
 
 app.use((req, res, next) => {
     console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
@@ -105,64 +104,34 @@ app.put("/interact", async (req, res) => {
                     message: "你現在進到高發事故危險區，請注意安全。",
                 });
             }
+
+            return res.status(200).json({});
         }
         case "bicycle":
         case "bike":
-            if (
-                userStatus[0].lastPosition[0] === 0 &&
-                userStatus[0].lastPosition[1] === 0
-            ) {
-                userStatus[0].lastPosition = [req.body.lng, req.body.lat];
-                return res.status(200).json({});
-            }
+            let predictNext2DPoint =
+                require("./lib/predictNextPoint").predictNext2DPoint;
 
-            let isNextRdBikeFriendly = false;
+            let predictedPoint = pointToLatLng(
+                predictNext2DPoint(latLngArrayToPointArray(positionHistory), 5)
+            ); // 預測 5 步後的位置
+             
+            console.log("預測位置:", predictedPoint);
 
-
-            let vector = [
-                req.body.lng - userStatus[0].lastPosition[0],
-                req.body.lat - userStatus[0].lastPosition[1],
-            ];
-
-            userStatus[0].lastPosition = [req.body.lng, req.body.lat];
-
-            let lines = await databaseService.findNearLines(
-                req.body.lng,
-                req.body.lat,
-                4
+            let line = await databaseService.findLinesByHaveBikeSortByNearestInRange(
+                predictedPoint.lat,
+                predictedPoint.lng,
+                0.0003 // 約 50 公尺
             );
-            for (let line of lines) {
+            
+            console.log(line.length)
 
-                console.log(line.id, line.start_lng, line.start_lat, line.end_lng, line.end_lat);
+            let isNextRdBikeFriendly = line.length > 0;
 
 
-                let angle1 = angleBetween(vector, [
-                    line.end_lng - line.start_lng,
-                    line.end_lat - line.start_lat,
-                ]);
-                let angle2 = angleBetween(vector, [
-                    line.start_lng - line.end_lng,
-                    line.start_lat - line.end_lat,
-                ]);
-
-                let angle = Math.min(Math.abs(angle1), Math.abs(angle2));
-
-                console.log("比較角度:", angle);
-                if (Math.abs(angle) < 30) {
-                    console.log(
-                        "找到符合方向的自行車友善道路:",
-                        line.id,
-                        "角度:",
-                        angle
-                    );
-                    isNextRdBikeFriendly = true;
-                }
-            }
-
-            if (
-                isNextRdBikeFriendly !== userStatus[0].isCurrentRdBikeFriendly
-            ) {
+            if (isNextRdBikeFriendly != userStatus[0].isCurrentRdBikeFriendly) {
                 userStatus[0].isCurrentRdBikeFriendly = isNextRdBikeFriendly;
+
                 eventList.push(events.USER_BIKE_FRIENDLY_ROAD_STATUS_CHANGED);
             }
 
@@ -175,16 +144,11 @@ app.put("/interact", async (req, res) => {
                     ? "前方道路為自行車友善道路，騎乘更舒適！"
                     : "前方道路非自行車友善道路，請注意安全！";
 
-                console.log("自行車道路狀態改變事件觸發:", msg);
-
                 return res.status(200).json({
                     type: "bike",
                     message: msg,
                 });
             }
-
-            return res.status(200).json({});
-            break;
         default:
             return res.status(400).json({ error: "Invalid interaction type." });
     }
